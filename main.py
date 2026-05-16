@@ -1,41 +1,61 @@
 import os
 import requests
-from fastapi import FastAPI, Request, Response
+import base64
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"])
-async def relay(request: Request, path: str):
-    # Extract headers and body from incoming request from Google Script
-    headers = dict(request.headers)
-    body = await request.body()
-    
-    # Clean up host header to avoid conflicts
-    headers.pop("host", None)
-    
-    # We expect the real destination URL to be sent via a custom header from Google Apps Script
-    # Usually passed as 'x-target-url' or encoded in the request.
-    target_url = request.headers.get("x-target-url")
-    
-    if not target_url:
-        return {"status": "Exit Node is running successfully!"}
-        
+AUTH_KEY = "Mohammad#4512"
+
+@app.post("/")
+async def handle_relay(request: Request):
     try:
-        # Forward request to the actual website
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"e": "Invalid JSON"})
+
+    client_key = data.get("k") or request.headers.get("x-exit-psk")
+    if client_key != AUTH_KEY:
+        return JSONResponse(status_code=401, content={"e": "unauthorized"})
+
+    if "q" in data and isinstance(data["q"], list):
+        results = []
+        for q_item in data["q"]:
+            results.append(execute_request(q_item))
+        return {"q": results}
+    
+    return execute_request(data)
+
+def execute_request(item):
+    url = item.get("u")
+    if not url:
+        return {"e": "bad url"}
+    try:
+        method = item.get("m", "GET").upper()
+        headers = {k: v for k, v in item.get("h", {}).items() if k.lower() not in ["host", "content-length", "accept-encoding"]}
+        
+        payload = None
+        if item.get("b"):
+            payload = base64.b64decode(item["b"])
+            
         res = requests.request(
-            method=request.method,
-            url=target_url,
+            method=method,
+            url=url,
             headers=headers,
-            data=body,
-            timeout=30,
+            data=payload,
+            timeout=15,
             allow_redirects=False
         )
         
-        # Return response back to Google Script
-        return Response(
-            content=res.content,
-            status_code=res.status_code,
-            headers=dict(res.headers)
-        )
+        return {
+            "s": res.status_code,
+            "h": dict(res.headers),
+            "b": base64.b64encode(res.content).decode('utf-8')
+        }
     except Exception as e:
-        return Response(content=str(e), status_code=500)
+        return {"e": str(e)}
+
+@app.get("/")
+def health():
+    return {"status": "ready"}
